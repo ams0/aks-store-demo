@@ -1,134 +1,121 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
-// Valid database API types
-const (
-	AZURE_COSMOS_DB_SQL_API = "cosmosdbsql"
-)
-
-// Dapr subscription structure
-type Subscription struct {
-	PubsubName string `json:"pubsubname"`
-	Topic      string `json:"topic"`
-	Route      string `json:"route"`
+// CloudEvent represents the structure of a Dapr CloudEvent
+type CloudEvent struct {
+	ID              string                 `json:"id"`
+	Source          string                 `json:"source"`
+	SpecVersion     string                 `json:"specversion"`
+	Type            string                 `json:"type"`
+	DataContentType string                 `json:"datacontenttype"`
+	Data            map[string]interface{} `json:"data"`
+	Subject         string                 `json:"subject,omitempty"`
+	Time            string                 `json:"time,omitempty"`
 }
 
-// Dapr CloudEvent structure for incoming messages
-type CloudEvent struct {
-	ID              string      `json:"id"`
-	Source          string      `json:"source"`
-	SpecVersion     string      `json:"specversion"`
-	Type            string      `json:"type"`
-	DataContentType string      `json:"datacontenttype"`
-	Data            interface{} `json:"data"`
-	Subject         string      `json:"subject,omitempty"`
-	Time            string      `json:"time,omitempty"`
+// getEnvVar gets an environment variable with optional fallback variables
+func getEnvVar(varName string, fallbackVarNames ...string) string {
+	value := os.Getenv(varName)
+	if value == "" {
+		for _, fallbackVarName := range fallbackVarNames {
+			value = os.Getenv(fallbackVarName)
+			if value != "" {
+				break
+			}
+		}
+		if value == "" && len(fallbackVarNames) == 0 {
+			// If no fallback provided, this is a required variable
+			log.Printf("%s is not set and no fallback provided", varName)
+			os.Exit(1)
+		}
+		// If fallback provided but empty, use the last fallback as default
+		if value == "" && len(fallbackVarNames) > 0 {
+			value = fallbackVarNames[len(fallbackVarNames)-1]
+		}
+	}
+	return value
+}
+
+// initDaprDatabase initializes the Dapr-based database connection
+func initDaprDatabase() (*OrderService, error) {
+	stateStoreName := getEnvVar("STATE_STORE_NAME", "statestore")
+	daprPort := getEnvVar("DAPR_HTTP_PORT", "3500")
+	
+	daprRepo := &DaprStateRepository{
+		stateStoreName: stateStoreName,
+		daprPort:       daprPort,
+	}
+	
+	return NewOrderService(daprRepo), nil
 }
 
 func main() {
-	var orderService *OrderService
+	log.Println("makeline-service started with Dapr")
 
-	// Check if we should use Dapr
-	useDaprPubSub := os.Getenv("USE_DAPR_PUBSUB") == "true"
-	useDaprStateStore := os.Getenv("USE_DAPR_STATE_STORE") == "true"
-
-	log.Printf("Dapr pub/sub enabled: %v", useDaprPubSub)
-	log.Printf("Dapr state store enabled: %v", useDaprStateStore)
-
-	if useDaprStateStore {
-		// Initialize Dapr-based order service
-		orderService = &OrderService{
-			repo: &DaprStateRepository{
-				stateStoreName: os.Getenv("STATE_STORE_NAME"),
-				daprPort:       os.Getenv("DAPR_HTTP_PORT"),
-			},
-		}
-		log.Printf("Using Dapr state store: %s", os.Getenv("STATE_STORE_NAME"))
-	} else {
-		// Get the database API type for traditional approach
-		apiType := os.Getenv("ORDER_DB_API")
-		switch apiType {
-		case "cosmosdbsql":
-			log.Printf("Using Azure CosmosDB SQL API")
-		default:
-			log.Printf("Using MongoDB API")
-		}
-
-		// Initialize the traditional database
-		var err error
-		orderService, err = initDatabase(apiType)
-		if err != nil {
-			log.Printf("Failed to initialize database: %s", err)
-			os.Exit(1)
-		}
+	orderService, err := initDaprDatabase()
+	if err != nil {
+		log.Fatal("Failed to initialize Dapr database:", err)
 	}
 
-	router := gin.Default()
-	router.Use(cors.Default())
-	router.Use(OrderMiddleware(orderService))
+	// Initialize Gin router
+	r := gin.Default()
 
-	// Traditional API endpoints
-	router.GET("/order/fetch", fetchOrders)
-	router.GET("/order/:id", getOrder)
-	router.PUT("/order", updateOrder)
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
-			"version": os.Getenv("APP_VERSION"),
-		})
+	// Dapr subscription configuration endpoint
+	r.GET("/dapr/subscribe", getSubscriptions)
+
+	// Dapr order handler endpoint  
+	r.POST("/orders", OrderMiddleware(orderService), handleDaprOrder)
+
+	// API endpoints (compatible with existing makeline service)
+	api := r.Group("/")
+	{
+		api.GET("/orders", fetchOrders)        // Keep for backwards compatibility
+		api.GET("/order/fetch", fetchOrders)   // Virtual-worker expects this endpoint
+		api.GET("/order/:id", getOrder)
+		api.POST("/order/:id", updateOrder)
+		api.PUT("/order", updateOrder)         // Virtual-worker expects this endpoint
+	}
+
+	// Health check endpoint
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "healthy"})
 	})
 
-	if useDaprPubSub {
-		// Dapr subscription endpoint
-		router.GET("/dapr/subscribe", getSubscriptions)
-		// Dapr message handler endpoint
-		router.POST("/orders", handleDaprOrder)
-		log.Printf("Dapr pub/sub endpoints registered")
+	port := getEnvVar("PORT", "3001")
+	log.Printf("Server starting on port %s", port)
+	if err := r.Run(":" + port); err != nil {
+		log.Fatal("Failed to start server:", err)
 	}
-
-	router.Run(":3001")
 }
 
-// Dapr subscription metadata endpoint
+// getSubscriptions returns the Dapr subscription configuration
 func getSubscriptions(c *gin.Context) {
-	pubsubName := os.Getenv("PUBSUB_NAME")
-	topic := os.Getenv("PUBSUB_TOPIC")
-
-	if pubsubName == "" {
-		pubsubName = "order-pub-sub"
-	}
-	if topic == "" {
-		topic = "orders"
-	}
-
-	subscriptions := []Subscription{
+	pubsubName := getEnvVar("PUBSUB_NAME", "orderprocessing")
+	topicName := getEnvVar("ORDER_TOPIC_NAME", "orders")
+	
+	subscriptions := []map[string]interface{}{
 		{
-			PubsubName: pubsubName,
-			Topic:      topic,
-			Route:      "/orders",
+			"pubsubname": pubsubName,
+			"topic":      topicName,
+			"route":      "/orders",
 		},
 	}
-
 	c.JSON(http.StatusOK, subscriptions)
 }
 
-// Dapr message handler for incoming orders
+// handleDaprOrder processes incoming orders from Dapr pub/sub
 func handleDaprOrder(c *gin.Context) {
-	client, ok := c.MustGet("orderService").(*OrderService)
+	orderService, ok := c.MustGet("orderService").(*OrderService) 
 	if !ok {
-		log.Printf("Failed to get order service")
+		log.Printf("Failed to get order service from context")
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
@@ -136,38 +123,43 @@ func handleDaprOrder(c *gin.Context) {
 	var cloudEvent CloudEvent
 	if err := c.ShouldBindJSON(&cloudEvent); err != nil {
 		log.Printf("Failed to bind CloudEvent: %v", err)
-		c.AbortWithStatus(http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CloudEvent format"})
 		return
 	}
 
-	log.Printf("Received order via Dapr pub/sub: %+v", cloudEvent)
+	log.Printf("Received CloudEvent: ID=%s, Type=%s, Source=%s", cloudEvent.ID, cloudEvent.Type, cloudEvent.Source)
 
 	// Extract order data from CloudEvent
 	orderData, err := json.Marshal(cloudEvent.Data)
 	if err != nil {
 		log.Printf("Failed to marshal order data: %v", err)
-		c.AbortWithStatus(http.StatusInternalServerError)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid order data"})
 		return
 	}
 
-	// Unmarshal into Order struct
-	order, err := unmarshalOrderFromQueue(orderData)
-	if err != nil {
+	var order Order
+	if err := json.Unmarshal(orderData, &order); err != nil {
 		log.Printf("Failed to unmarshal order: %v", err)
-		c.AbortWithStatus(http.StatusInternalServerError)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid order format"})
 		return
 	}
 
-	// Save order to database/state store
+	// Set initial status if not set
+	if order.Status == 0 {
+		order.Status = 1 // Processing
+	}
+
+	log.Printf("Processing order: %s", order.OrderID)
+
+	// Save order using Dapr state store
 	orders := []Order{order}
-	err = client.repo.InsertOrders(orders)
-	if err != nil {
-		log.Printf("Failed to save order: %v", err)
-		c.AbortWithStatus(http.StatusInternalServerError)
+	if err := orderService.repo.InsertOrders(orders); err != nil {
+		log.Printf("Failed to save order %s: %v", order.OrderID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save order"})
 		return
 	}
 
-	log.Printf("Order %s processed successfully via Dapr", order.OrderID)
+	log.Printf("Successfully processed order: %s", order.OrderID)
 
 	// Return success to Dapr
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -181,7 +173,7 @@ func OrderMiddleware(orderService *OrderService) gin.HandlerFunc {
 	}
 }
 
-// Fetches orders - works with both traditional queue and Dapr
+// Fetches orders - for Dapr mode, orders come via pub/sub
 func fetchOrders(c *gin.Context) {
 	client, ok := c.MustGet("orderService").(*OrderService)
 	if !ok {
@@ -190,27 +182,7 @@ func fetchOrders(c *gin.Context) {
 		return
 	}
 
-	useDaprPubSub := os.Getenv("USE_DAPR_PUBSUB") == "true"
-
-	if !useDaprPubSub {
-		// Traditional queue-based approach
-		orders, err := getOrdersFromQueue()
-		if err != nil {
-			log.Printf("Failed to fetch orders from queue: %s", err)
-			c.AbortWithStatus(http.StatusInternalServerError)
-			return
-		}
-
-		// Save orders to database
-		err = client.repo.InsertOrders(orders)
-		if err != nil {
-			log.Printf("Failed to save orders to database: %s", err)
-			c.AbortWithStatus(http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Return the orders to be processed (works for both approaches)
+	// In Dapr mode, orders are processed via pub/sub, so we just return pending orders
 	orders, err := client.repo.GetPendingOrders()
 	if err != nil {
 		log.Printf("Failed to get pending orders: %s", err)
@@ -268,120 +240,4 @@ func updateOrder(c *gin.Context) {
 	}
 
 	c.IndentedJSON(http.StatusOK, updatedOrder)
-}
-
-// DaprStateRepository implements OrderRepository using Dapr State API
-type DaprStateRepository struct {
-	stateStoreName string
-	daprPort       string
-}
-
-func (r *DaprStateRepository) InsertOrders(orders []Order) error {
-	if r.daprPort == "" {
-		r.daprPort = "3500"
-	}
-
-	for _, order := range orders {
-		// Create state request
-		stateData := map[string]interface{}{
-			"key":   order.OrderID,
-			"value": order,
-		}
-
-		jsonData, err := json.Marshal([]map[string]interface{}{stateData})
-		if err != nil {
-			return fmt.Errorf("failed to marshal state data: %v", err)
-		}
-
-		// Send to Dapr state store
-		url := fmt.Sprintf("http://localhost:%s/v1.0/state/%s", r.daprPort, r.stateStoreName)
-		resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-		if err != nil {
-			return fmt.Errorf("failed to save order to Dapr state store: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusNoContent {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("Dapr state store returned error: %s", string(body))
-		}
-
-		log.Printf("Order %s saved to Dapr state store", order.OrderID)
-	}
-
-	return nil
-}
-
-func (r *DaprStateRepository) GetPendingOrders() ([]Order, error) {
-	// Note: This is a simplified implementation
-	// In practice, you'd need to implement a query mechanism or maintain an index
-	// For demo purposes, we'll return an empty slice as orders are processed via pub/sub
-	return []Order{}, nil
-}
-
-func (r *DaprStateRepository) GetOrder(orderID string) (*Order, error) {
-	if r.daprPort == "" {
-		r.daprPort = "3500"
-	}
-
-	url := fmt.Sprintf("http://localhost:%s/v1.0/state/%s/%s", r.daprPort, r.stateStoreName, orderID)
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get order from Dapr state store: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("order not found")
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Dapr state store returned error: %s", string(body))
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %v", err)
-	}
-
-	var order Order
-	if err := json.Unmarshal(body, &order); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal order: %v", err)
-	}
-
-	return &order, nil
-}
-
-func (r *DaprStateRepository) UpdateOrder(order Order) error {
-	if r.daprPort == "" {
-		r.daprPort = "3500"
-	}
-
-	// Create state request
-	stateData := map[string]interface{}{
-		"key":   order.OrderID,
-		"value": order,
-	}
-
-	jsonData, err := json.Marshal([]map[string]interface{}{stateData})
-	if err != nil {
-		return fmt.Errorf("failed to marshal state data: %v", err)
-	}
-
-	// Send to Dapr state store
-	url := fmt.Sprintf("http://localhost:%s/v1.0/state/%s", r.daprPort, r.stateStoreName)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to update order in Dapr state store: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Dapr state store returned error: %s", string(body))
-	}
-
-	log.Printf("Order %s updated in Dapr state store", order.OrderID)
-	return nil
 }

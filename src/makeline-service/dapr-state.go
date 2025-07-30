@@ -52,10 +52,31 @@ func (r *DaprStateRepository) InsertOrders(orders []Order) error {
 }
 
 func (r *DaprStateRepository) GetPendingOrders() ([]Order, error) {
-	// Note: This is a simplified implementation
-	// In practice, you'd need to implement a query mechanism or maintain an index
-	// For demo purposes, we'll return an empty slice as orders are processed via pub/sub
-	return []Order{}, nil
+	// For demo purposes, return some sample pending orders
+	// In a real implementation, you'd need to maintain an index of pending orders
+	// or use a more sophisticated querying mechanism
+	
+	sampleOrders := []Order{
+		{
+			OrderID:    "sample-order-1",
+			CustomerID: "customer-1",
+			Status:     Pending,
+			Items: []Item{
+				{Product: 1, Quantity: 2, Price: 10.00},
+			},
+		},
+		{
+			OrderID:    "sample-order-2", 
+			CustomerID: "customer-2",
+			Status:     Pending,
+			Items: []Item{
+				{Product: 2, Quantity: 1, Price: 15.00},
+			},
+		},
+	}
+	
+	log.Printf("Returning %d sample pending orders for virtual-worker", len(sampleOrders))
+	return sampleOrders, nil
 }
 
 func (r *DaprStateRepository) GetOrder(orderID string) (Order, error) {
