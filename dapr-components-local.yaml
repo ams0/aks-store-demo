@@ -1,0 +1,74 @@
+# Local In-Cluster Dapr Components
+# These components use the existing MongoDB and RabbitMQ in the cluster
+
+# State Store Component - MongoDB (for orders)
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: order-store
+  namespace: default
+spec:
+  type: state.mongodb
+  version: v1
+  metadata:
+    - name: host
+      value: "mongodb:27017"
+    - name: databaseName
+      value: "orderdb"
+    - name: collectionName
+      value: "orders"
+    - name: writeConcern
+      value: "majority"
+    - name: readConcern
+      value: "majority"
+scopes:
+  - makeline-service
+---
+# State Store Component - MongoDB (for products)
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: product-store
+  namespace: default
+spec:
+  type: state.mongodb
+  version: v1
+  metadata:
+    - name: host
+      value: "mongodb:27017"
+    - name: databaseName
+      value: "productdb"
+    - name: collectionName
+      value: "products"
+    - name: writeConcern
+      value: "majority"
+    - name: readConcern
+      value: "majority"
+scopes:
+  - product-service
+---
+# Pub/Sub Component - RabbitMQ (already exists, but here for completeness)
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: order-pub-sub
+  namespace: default
+spec:
+  type: pubsub.rabbitmq
+  version: v1
+  metadata:
+    - name: host
+      value: "amqp://username:password@rabbitmq:5672"
+    - name: durable
+      value: "true"
+    - name: deletedWhenUnused
+      value: "false"
+    - name: autoAck
+      value: "false"
+    - name: reconnectWait
+      value: "0"
+    - name: concurrency
+      value: "parallel"
+scopes:
+  - order-service
+  - makeline-service
