@@ -59,103 +59,103 @@ spec:
       value: "orderdb"
     - name: collection
       value: "orders"
-  # Alternative: Use Azure AD authentication
-  # - name: clientId
-  #   value: "your-client-id"
-  # - name: clientSecret
-  #   secretKeyRef:
-  #     name: azure-cosmosdb-secret
-  #     key: clientsecret
-  # - name: tenantId
-  #   value: "your-tenant-id"
+    # Alternative: Use Azure AD authentication (recommended for production)
+    # - name: clientId
+    #   value: "your-client-id"
+    # - name: clientSecret
+    #   secretKeyRef:
+    #     name: azure-cosmosdb-secret
+    #     key: clientsecret
+    # - name: tenantId
+    #   value: "your-tenant-id"
 scopes:
   - makeline-service
 ---
 # Product State Store Component - Azure Cosmos DB (separate container for products)
-apiVersion: dapr.io/v1alpha1
-kind: Component
-metadata:
-  name: product-store
-  namespace: default
-spec:
-  type: state.azure.cosmosdb
-  version: v1
-  metadata:
-    - name: url
-      value: "https://your-cosmosdb-account.documents.azure.com:443/"
-    - name: masterKey
-      secretKeyRef:
-        name: azure-cosmosdb-secret
-        key: masterkey
-    - name: database
-      value: "productdb"
-    - name: collection
-      value: "products"
-scopes:
-  - product-service
----
-# Secrets Component - Azure Key Vault
-apiVersion: dapr.io/v1alpha1
-kind: Component
-metadata:
-  name: azure-keyvault
-  namespace: default
-spec:
-  type: secretstores.azure.keyvault
-  version: v1
-  metadata:
-    - name: vaultName
-      value: "your-keyvault-name"
-    # Option 1: Service Principal authentication
-    - name: azureClientId
-      value: "your-service-principal-client-id"
-    - name: azureClientSecret
-      secretKeyRef:
-        name: azure-sp-secret
-        key: clientsecret
-    - name: azureTenantId
-      value: "your-tenant-id"
-  # Option 2: Managed Identity (preferred in AKS)
-  # - name: azureClientId
-  #   value: "your-managed-identity-client-id"
-scopes:
-  - order-service
-  - makeline-service
-  - product-service
----
+# apiVersion: dapr.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: product-store
+#   namespace: default
+# spec:
+#   type: state.azure.cosmosdb
+#   version: v1
+#   metadata:
+#     - name: url
+#       value: "https://your-cosmosdb-account.documents.azure.com:443/"
+#     - name: masterKey
+#       secretKeyRef:
+#         name: azure-cosmosdb-secret
+#         key: masterkey
+#     - name: database
+#       value: "productdb"
+#     - name: collection
+#       value: "products"
+# scopes:
+#   - product-service
+# ---
+# # Secrets Component - Azure Key Vault
+# apiVersion: dapr.io/v1alpha1
+# kind: Component
+# metadata:
+#   name: azure-keyvault
+#   namespace: default
+# spec:
+#   type: secretstores.azure.keyvault
+#   version: v1
+#   metadata:
+#     - name: vaultName
+#       value: "your-keyvault-name"
+#     # Option 1: Service Principal authentication
+#     - name: azureClientId
+#       value: "your-service-principal-client-id"
+#     - name: azureClientSecret
+#       secretKeyRef:
+#         name: azure-sp-secret
+#         key: clientsecret
+#     - name: azureTenantId
+#       value: "your-tenant-id"
+#   # Option 2: Managed Identity (preferred in AKS)
+#   # - name: azureClientId
+#   #   value: "your-managed-identity-client-id"
+# scopes:
+#   - order-service
+#   - makeline-service
+#   - product-service
+# ---
 # Required Kubernetes Secrets for Azure Services
 # These would typically be created separately or via Azure Key Vault CSI driver
 
 # Azure Service Bus connection string secret
-apiVersion: v1
-kind: Secret
-metadata:
-  name: azure-servicebus-secret
-  namespace: default
-type: Opaque
-data:
-  # Base64 encoded connection string
-  # Example: Endpoint=sb://your-namespace.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=your-key
-  connectionstring: RW5kcG9pbnQ9c2I6Ly95b3VyLW5hbWVzcGFjZS5zZXJ2aWNlYnVzLndpbmRvd3MubmV0LztTaGFyZWRBY2Nlc3NLZXlOYW1lPVJvb3RNYW5hZ2VTaGFyZWRBY2Nlc3NLZXk7U2hhcmVkQWNjZXNzS2V5PXlvdXIta2V5
----
-# Azure Cosmos DB master key secret
-apiVersion: v1
-kind: Secret
-metadata:
-  name: azure-cosmosdb-secret
-  namespace: default
-type: Opaque
-data:
-  # Base64 encoded master key
-  masterkey: eW91ci1jb3Ntb3NkYi1tYXN0ZXIta2V5
----
-# Azure Service Principal secret (if using SP authentication)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: azure-sp-secret
-  namespace: default
-type: Opaque
-data:
-  # Base64 encoded client secret
-  clientsecret: eW91ci1zZXJ2aWNlLXByaW5jaXBhbC1jbGllbnQtc2VjcmV0
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: azure-servicebus-secret
+#   namespace: default
+# type: Opaque
+# data:
+#   # Base64 encoded connection string
+#   # Example: Endpoint=sb://your-namespace.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=your-key
+#   connectionstring: RW5kcG9pbnQ9c2I6Ly95b3VyLW5hbWVzcGFjZS5zZXJ2aWNlYnVzLndpbmRvd3MubmV0LztTaGFyZWRBY2Nlc3NLZXlOYW1lPVJvb3RNYW5hZ2VTaGFyZWRBY2Nlc3NLZXk7U2hhcmVkQWNjZXNzS2V5PXlvdXIta2V5
+# ---
+# # Azure Cosmos DB master key secret
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: azure-cosmosdb-secret
+#   namespace: default
+# type: Opaque
+# data:
+#   # Base64 encoded master key
+#   masterkey: eW91ci1jb3Ntb3NkYi1tYXN0ZXIta2V5
+# ---
+# # Azure Service Principal secret (if using SP authentication)
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: azure-sp-secret
+#   namespace: default
+# type: Opaque
+# data:
+#   # Base64 encoded client secret
+#   clientsecret: eW91ci1zZXJ2aWNlLXByaW5jaXBhbC1jbGllbnQtc2VjcmV0
